@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 venv/
 .env
+logs/
+sent_periods.json
+get-pip.py

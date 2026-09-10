@@ -11,6 +11,14 @@ CURRENCY = "USD"
 
 EMAIL = "javier2mil8@gmail.com"
 
-INVOICE_NO = "INV-090"
+INVOICE_NO = "INV-093"
 
 OUTPUT_PATH = "/home/javier/Desktop"
+
+# Open Thunderbird compose with the PDF attached after generating.
+OPEN_THUNDERBIRD = True
+EMAIL_TO = "ap@mouritech.com"
+
+# Cron: check daily; skip periods already listed in sent_periods.json
+CRON_HOUR = 9
+CRON_MINUTE = 0

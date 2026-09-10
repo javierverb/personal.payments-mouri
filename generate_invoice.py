@@ -4,7 +4,11 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
+import shutil
+import subprocess
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -28,6 +32,7 @@ import _config_params as cfg
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "_config_params.py"
 DATES_FILE = BASE_DIR / "fechas-de-pagos.txt"
+SENT_PERIODS_FILE = BASE_DIR / "sent_periods.json"
 PERIOD_RE = re.compile(r"(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})")
 INVOICE_NO_ASSIGN_RE = re.compile(r'(INVOICE_NO\s*=\s*")([^"]+)(")')
 
@@ -75,6 +80,41 @@ def last_closed_period(periods: list[tuple[date, date]], today: date) -> tuple[d
     if not closed:
         raise ValueError(f"No closed payment period found for {today.isoformat()}")
     return max(closed, key=lambda period: period[1])
+
+
+def load_sent_periods(path: Path = SENT_PERIODS_FILE) -> set[str]:
+    if not path.exists():
+        return set()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        periods = data.get("periods", [])
+    elif isinstance(data, list):
+        periods = data
+    else:
+        periods = []
+    return {str(item) for item in periods}
+
+
+def mark_period_sent(
+    period_label: str,
+    invoice_no: str,
+    path: Path = SENT_PERIODS_FILE,
+) -> None:
+    existing = load_sent_periods(path)
+    existing.add(period_label)
+    payload = {
+        "periods": sorted(existing),
+        "last": {
+            "period": period_label,
+            "invoice_no": invoice_no,
+            "sent_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def period_already_sent(period_label: str, path: Path = SENT_PERIODS_FILE) -> bool:
+    return period_label in load_sent_periods(path)
 
 
 def build_styles() -> dict[str, ParagraphStyle]:
@@ -414,13 +454,14 @@ def bump_invoice_no(config_path: Path, current: str) -> str:
     return nxt
 
 
-def generate_invoice(today: date | None = None) -> Path:
+def generate_invoice(today: date | None = None) -> tuple[Path, str, date]:
     today = today or date.today()
     start, end = last_closed_period(load_periods(DATES_FILE), today)
     period_label = format_period(start, end)
+    invoice_no = cfg.INVOICE_NO
     output_dir = Path(cfg.OUTPUT_PATH).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{cfg.INVOICE_NO}.pdf"
+    output_path = output_dir / f"{invoice_no}.pdf"
     styles = build_styles()
     doc = SimpleDocTemplate(
         str(output_path),
@@ -429,23 +470,104 @@ def generate_invoice(today: date | None = None) -> Path:
         rightMargin=inch,
         topMargin=0.7 * inch,
         bottomMargin=inch,
-        title=f"{cfg.INVOICE_NO} - {period_label}",
+        title=f"{invoice_no} - {period_label}",
         author=cfg.FROM_NAME,
     )
     doc.build(build_story(styles, start, end), onFirstPage=make_footer(period_label))
-    bump_invoice_no(CONFIG_FILE, cfg.INVOICE_NO)
-    return output_path
+    return output_path, period_label, end
 
 
-def main() -> int:
+def _tb_quote(value: str) -> str:
+    """Escape a value for Thunderbird -compose key='value' fields."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def build_email_body(invoice_no: str, period_label: str, due: date) -> str:
+    return (
+        "Hi ,\n"
+        "\n"
+        f"A new invoice has been generated for you by {cfg.FROM_NAME}. "
+        "Here's a quick summary:\n"
+        "\n"
+        f"Invoice Details: {invoice_no} - period {period_label}\n"
+        "\n"
+        f"Total Invoice Amount: {format_money(cfg.RATE)} {cfg.CURRENCY}\n"
+        "\n"
+        f"Due Date: {format_long_date(due)}\n"
+        "\n"
+        "You can view the invoice or download a PDF copy of it from the following link:\n"
+        "\n"
+        "(Please see the attached PDF.)"
+    )
+
+
+def open_thunderbird_with_invoice(pdf_path: Path, period_label: str, due: date) -> None:
+    thunderbird = shutil.which("thunderbird")
+    if not thunderbird:
+        raise FileNotFoundError("Thunderbird not found in PATH")
+
+    invoice_no = pdf_path.stem
+    to_addr = getattr(cfg, "EMAIL_TO", "") or ""
+    subject = f"Invoice {invoice_no} - period {period_label}"
+    body = build_email_body(invoice_no, period_label, due)
+    attachment = pdf_path.resolve().as_uri()
+    compose = (
+        f"to='{_tb_quote(to_addr)}',"
+        f"subject='{_tb_quote(subject)}',"
+        f"body='{_tb_quote(body)}',"
+        f"attachment='{_tb_quote(attachment)}'"
+    )
+    subprocess.Popen([thunderbird, "-compose", compose])
+
+
+def run_pipeline(*, if_needed: bool = False, today: date | None = None) -> int:
+    today = today or date.today()
     try:
-        output_path = generate_invoice()
+        start, end = last_closed_period(load_periods(DATES_FILE), today)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+    period_label = format_period(start, end)
+    if if_needed and period_already_sent(period_label):
+        print(f"Skip: period {period_label} already sent")
+        return 0
+
+    if if_needed:
+        print(f"Due: period {period_label} not sent yet")
+
+    try:
+        output_path, period_label, due = generate_invoice(today=today)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
     print(f"Generated {output_path}")
-    print(f"Next invoice: {next_invoice_no(cfg.INVOICE_NO)}")
+
+    if getattr(cfg, "OPEN_THUNDERBIRD", False):
+        try:
+            open_thunderbird_with_invoice(output_path, period_label, due)
+            print("Opened Thunderbird compose with PDF attached.")
+        except FileNotFoundError as exc:
+            print(f"Warning: {exc}", file=sys.stderr)
+            return 1
+
+    bump_invoice_no(CONFIG_FILE, output_path.stem)
+    mark_period_sent(period_label, output_path.stem)
+    print(f"Next invoice: {next_invoice_no(output_path.stem)}")
+    print(f"Marked period as sent: {period_label}")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate Mouri invoice PDF")
+    parser.add_argument(
+        "--if-needed",
+        action="store_true",
+        help="Only run if the last closed period was not emailed yet",
+    )
+    args = parser.parse_args(argv)
+    return run_pipeline(if_needed=args.if_needed)
 
 
 if __name__ == "__main__":
