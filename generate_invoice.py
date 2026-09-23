@@ -33,8 +33,12 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "_config_params.py"
 DATES_FILE = BASE_DIR / "fechas-de-pagos.txt"
 SENT_PERIODS_FILE = BASE_DIR / "sent_periods.json"
-PERIOD_RE = re.compile(r"(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})")
+PERIOD_RE = re.compile(
+    r"(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})(?:\s*[|]\s*(\d{2}/\d{2}/\d{4}))?"
+)
 INVOICE_NO_ASSIGN_RE = re.compile(r'(INVOICE_NO\s*=\s*")([^"]+)(")')
+
+Period = tuple[date, date, date]
 
 NAVY = colors.HexColor("#1B365D")
 TEAL = colors.HexColor("#0F6C6C")
@@ -61,21 +65,24 @@ def format_money(amount: float) -> str:
     return f"{amount:,.2f}"
 
 
-def load_periods(path: Path) -> list[tuple[date, date]]:
+def load_periods(path: Path) -> list[Period]:
     if not path.exists():
         raise FileNotFoundError(f"Dates file not found: {path}")
-    periods: list[tuple[date, date]] = []
+    periods: list[Period] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         match = PERIOD_RE.search(line)
         if not match:
             continue
-        periods.append((parse_date(match.group(1)), parse_date(match.group(2))))
+        start = parse_date(match.group(1))
+        end = parse_date(match.group(2))
+        due = parse_date(match.group(3)) if match.group(3) else end
+        periods.append((start, end, due))
     if not periods:
         raise ValueError(f"No payment periods found in {path}")
     return periods
 
 
-def last_closed_period(periods: list[tuple[date, date]], today: date) -> tuple[date, date]:
+def last_closed_period(periods: list[Period], today: date) -> Period:
     closed = [period for period in periods if period[1] <= today]
     if not closed:
         raise ValueError(f"No closed payment period found for {today.isoformat()}")
@@ -265,12 +272,18 @@ def make_footer(period_label: str):
     return add_footer
 
 
-def build_story(styles: dict[str, ParagraphStyle], start: date, end: date) -> list:
+def build_story(
+    styles: dict[str, ParagraphStyle],
+    start: date,
+    end: date,
+    due: date,
+) -> list:
     period_label = format_period(start, end)
     period_text = f"period {period_label}"
     amount = cfg.RATE
     money = format_money(amount)
     invoice_date = format_long_date(end)
+    due_date = format_long_date(due)
     to_lines = "<br/>".join([cfg.TO_NAME, *cfg.TO_ADDRESS.splitlines()])
 
     story: list = [
@@ -314,7 +327,7 @@ def build_story(styles: dict[str, ParagraphStyle], start: date, end: date) -> li
             [
                 Paragraph(cfg.INVOICE_NO, styles["meta_value"]),
                 Paragraph(invoice_date, styles["meta_value"]),
-                Paragraph(invoice_date, styles["meta_value"]),
+                Paragraph(due_date, styles["meta_value"]),
             ],
         ],
         colWidths=[2.3 * inch, 2.3 * inch, 2.4 * inch],
@@ -456,7 +469,7 @@ def bump_invoice_no(config_path: Path, current: str) -> str:
 
 def generate_invoice(today: date | None = None) -> tuple[Path, str, date]:
     today = today or date.today()
-    start, end = last_closed_period(load_periods(DATES_FILE), today)
+    start, end, due = last_closed_period(load_periods(DATES_FILE), today)
     period_label = format_period(start, end)
     invoice_no = cfg.INVOICE_NO
     output_dir = Path(cfg.OUTPUT_PATH).expanduser()
@@ -473,8 +486,11 @@ def generate_invoice(today: date | None = None) -> tuple[Path, str, date]:
         title=f"{invoice_no} - {period_label}",
         author=cfg.FROM_NAME,
     )
-    doc.build(build_story(styles, start, end), onFirstPage=make_footer(period_label))
-    return output_path, period_label, end
+    doc.build(
+        build_story(styles, start, end, due),
+        onFirstPage=make_footer(period_label),
+    )
+    return output_path, period_label, due
 
 
 def _tb_quote(value: str) -> str:
@@ -523,7 +539,7 @@ def open_thunderbird_with_invoice(pdf_path: Path, period_label: str, due: date) 
 def run_pipeline(*, if_needed: bool = False, today: date | None = None) -> int:
     today = today or date.today()
     try:
-        start, end = last_closed_period(load_periods(DATES_FILE), today)
+        start, end, due = last_closed_period(load_periods(DATES_FILE), today)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -534,7 +550,7 @@ def run_pipeline(*, if_needed: bool = False, today: date | None = None) -> int:
         return 0
 
     if if_needed:
-        print(f"Due: period {period_label} not sent yet")
+        print(f"Due: period {period_label} not sent yet (invoice due {due.strftime('%m/%d/%Y')})")
 
     try:
         output_path, period_label, due = generate_invoice(today=today)

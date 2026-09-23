@@ -11,7 +11,7 @@ CURRENCY = "USD"
 
 EMAIL = "javier2mil8@gmail.com"
 
-INVOICE_NO = "INV-093"
+INVOICE_NO = "INV-094"
 
 OUTPUT_PATH = "/home/javier/Desktop"
 
@@ -19,6 +19,5 @@ OUTPUT_PATH = "/home/javier/Desktop"
 OPEN_THUNDERBIRD = True
 EMAIL_TO = "ap@mouritech.com"
 
-# Cron: check daily; skip periods already listed in sent_periods.json
-CRON_HOUR = 9
-CRON_MINUTE = 0
+# Cron: check every N minutes; skip periods already listed in sent_periods.json
+CRON_EVERY_MINUTES = 30

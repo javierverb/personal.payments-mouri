@@ -3,19 +3,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-source "${ROOT}/.venv/bin/activate" 2>/dev/null || true
+mkdir -p "${ROOT}/logs"
 
-HOUR="$(
-  "${ROOT}/.venv/bin/python" -c "import _config_params as c; print(getattr(c, 'CRON_HOUR', 9))"
-)"
-MINUTE="$(
-  "${ROOT}/.venv/bin/python" -c "import _config_params as c; print(getattr(c, 'CRON_MINUTE', 0))"
+EVERY_MINUTES="$(
+  "${ROOT}/.venv/bin/python" -c "import _config_params as c; print(int(getattr(c, 'CRON_EVERY_MINUTES', 30)))"
 )"
 
 MARKER_BEGIN="# BEGIN payments-mouri"
 MARKER_END="# END payments-mouri"
-CRON_LINE="${MINUTE} ${HOUR} * * * ${ROOT}/run_cron.sh >> ${ROOT}/logs/cron.log 2>&1"
+CRON_LINE="*/${EVERY_MINUTES} * * * * ${ROOT}/run_cron.sh >> ${ROOT}/logs/cron.log 2>&1"
 BLOCK="${MARKER_BEGIN}
 ${CRON_LINE}
 ${MARKER_END}"

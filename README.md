@@ -21,9 +21,9 @@ Editar [`_config_params.py`](_config_params.py):
 - `OUTPUT_PATH`: carpeta de salida del PDF
 - `OPEN_THUNDERBIRD`: si es `True`, abre Thunderbird con el PDF adjunto
 - `EMAIL_TO`: destinatario del correo
-- `CRON_HOUR` / `CRON_MINUTE`: horario del chequeo diario
+- `CRON_EVERY_MINUTES`: cada cuántos minutos revisa el cron (default 30)
 
-Los períodos están en [`fechas-de-pagos.txt`](fechas-de-pagos.txt). El script usa el último período cuya fecha de fin sea `<= hoy`.
+Los períodos están en [`fechas-de-pagos.txt`](fechas-de-pagos.txt) (`inicio - fin | due-date`). El script usa el último período cuya fecha de fin sea `<= hoy`. En el PDF/email, **Invoice Due** usa la tercera columna (due-date).
 
 ## Uso manual
 
@@ -53,10 +53,10 @@ python generate_invoice.py --if-needed
 **Estado:** instalado en el crontab del usuario.
 
 ```cron
-0 9 * * * /home/javier/projects/personal/payments-mouri/run_cron.sh >> .../logs/cron.log 2>&1
+*/30 * * * * /home/javier/projects/personal/payments-mouri/run_cron.sh >> .../logs/cron.log 2>&1
 ```
 
-- Corre todos los días a las **09:00**
+- Corre **cada 30 minutos**
 - Si el período ya está en `sent_periods.json` → skip
 - Si no → genera PDF, abre Thunderbird y marca el período
 
